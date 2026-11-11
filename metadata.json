@@ -1,0 +1,6 @@
+{
+  "name": "f-docx - Google Sheets Form Integration Suite",
+  "description": "Connect HTML website forms directly to Google Sheets via Google Apps Script with live spreadsheet simulator, 3 interactive forms, and downloadable demo project.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
