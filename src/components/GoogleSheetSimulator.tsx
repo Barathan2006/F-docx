@@ -1,5 +1,13 @@
 import React, { useState } from 'react';
-import { RegistrationSubmission, UserDetailsSubmission, FeedbackSubmission, FormType } from '../types';
+import {
+  RegistrationSubmission,
+  UserDetailsSubmission,
+  FeedbackSubmission,
+  FormType,
+  CustomFormConfig,
+  CustomFormSubmission,
+} from '../types';
+import { getOrderedColumnsForForm } from '../data/formBuilderCatalog';
 import {
   FileSpreadsheet,
   Download,
@@ -7,27 +15,27 @@ import {
   Plus,
   Search,
   Check,
-  Share2,
   Table,
-  Sparkles,
-  ExternalLink,
-  ChevronDown
 } from 'lucide-react';
 
 interface Props {
   registrations: RegistrationSubmission[];
   userDetails: UserDetailsSubmission[];
   feedbacks: FeedbackSubmission[];
-  activeSheetTab: FormType;
-  onSelectTab: (tab: FormType) => void;
-  onClearCurrentSheet: (tab: FormType) => void;
-  onAddDummyRow: (tab: FormType) => void;
+  customForms?: CustomFormConfig[];
+  customSubmissions?: CustomFormSubmission[];
+  activeSheetTab: string;
+  onSelectTab: (tab: string) => void;
+  onClearCurrentSheet: (tab: string) => void;
+  onAddDummyRow: (tab: string) => void;
 }
 
 export const GoogleSheetSimulator: React.FC<Props> = ({
   registrations,
   userDetails,
   feedbacks,
+  customForms = [],
+  customSubmissions = [],
   activeSheetTab,
   onSelectTab,
   onClearCurrentSheet,
@@ -40,9 +48,10 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
     value: 'Timestamp',
   });
   const [copiedNotification, setCopiedNotification] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
 
-  // Column definitions per sheet
-  const sheetConfig = {
+  // Built-in sheet configurations
+  const builtInConfig: Record<FormType, { title: string; columns: string[]; data: any[][] }> = {
     registration: {
       title: 'Registrations',
       columns: [
@@ -124,14 +133,54 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
     },
   };
 
-  const currentConfig = sheetConfig[activeSheetTab];
+  // Resolve active sheet (either built-in or custom form tab)
+  const matchedCustomForm = customForms.find(
+    (cf) => cf.id === activeSheetTab || cf.settings.sheetName === activeSheetTab
+  );
+
+  let currentConfig: { title: string; columns: string[]; data: any[][] };
+  if (activeSheetTab === 'registration' || activeSheetTab === 'userDetails' || activeSheetTab === 'feedback') {
+    currentConfig = builtInConfig[activeSheetTab];
+  } else if (matchedCustomForm) {
+    const colDefs = getOrderedColumnsForForm(matchedCustomForm.fields);
+    const headers = ['Timestamp', ...colDefs.map((c) => c.header)];
+    const matchingSubs = customSubmissions.filter((s) => s.formId === matchedCustomForm.id);
+    const rows = matchingSubs.map((sub) => {
+      const colMap = new Map(sub.columns.map((c) => [c.header, c.value]));
+      return [
+        sub.submittedAt,
+        ...colDefs.map((c) => {
+          const val = colMap.get(c.header);
+          if (val === undefined || val === '') return '—';
+          if (typeof val === 'boolean') return val ? 'TRUE' : 'FALSE';
+          return val;
+        }),
+      ];
+    });
+    currentConfig = {
+      title: matchedCustomForm.settings.sheetName || matchedCustomForm.settings.title,
+      columns: headers,
+      data: rows,
+    };
+  } else {
+    currentConfig = builtInConfig.registration;
+  }
 
   // Filter rows based on search
   const filteredData = currentConfig.data.filter((row) =>
     row.some((cell) => String(cell).toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
-  const getColLetter = (index: number) => String.fromCharCode(65 + index);
+  const getColLetter = (index: number) => {
+    let dividend = index + 1;
+    let colName = '';
+    while (dividend > 0) {
+      const modulo = (dividend - 1) % 26;
+      colName = String.fromCharCode(65 + modulo) + colName;
+      dividend = Math.floor((dividend - modulo) / 26);
+    }
+    return colName;
+  };
 
   // Export current sheet to CSV
   const handleExportCSV = () => {
@@ -150,16 +199,15 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
   };
 
   const handleCopyJSON = () => {
-    const jsonStr = JSON.stringify(
+    const payload =
       activeSheetTab === 'registration'
         ? registrations
         : activeSheetTab === 'userDetails'
         ? userDetails
-        : feedbacks,
-      null,
-      2
-    );
-    navigator.clipboard.writeText(jsonStr);
+        : activeSheetTab === 'feedback'
+        ? feedbacks
+        : customSubmissions.filter((s) => matchedCustomForm && s.formId === matchedCustomForm.id);
+    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
     setCopiedNotification(true);
     setTimeout(() => setCopiedNotification(false), 2000);
   };
@@ -190,7 +238,7 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
                 <span>Format</span>
                 <span>Data</span>
                 <span>Tools</span>
-                <span className="text-emerald-700 font-semibold cursor-pointer">Extensions → Apps Script</span>
+                <span className="text-emerald-700 font-semibold">Extensions → Apps Script</span>
               </div>
             </div>
           </div>
@@ -243,17 +291,34 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
               )}
             </button>
 
-            <button
-              onClick={() => {
-                if (confirm(`Are you sure you want to clear all rows in "${currentConfig.title}"?`)) {
-                  onClearCurrentSheet(activeSheetTab);
-                }
-              }}
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
-              title="Clear current sheet rows"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
+            {confirmClear ? (
+              <div className="inline-flex items-center gap-1 px-2 py-1 bg-rose-50 border border-rose-200 rounded-lg text-[11px]">
+                <span className="text-rose-700 font-semibold">Clear?</span>
+                <button
+                  onClick={() => {
+                    onClearCurrentSheet(activeSheetTab);
+                    setConfirmClear(false);
+                  }}
+                  className="px-1.5 py-0.5 bg-rose-600 text-white rounded font-semibold cursor-pointer"
+                >
+                  Yes
+                </button>
+                <button
+                  onClick={() => setConfirmClear(false)}
+                  className="px-1.5 py-0.5 bg-white border border-slate-200 rounded text-slate-600 cursor-pointer"
+                >
+                  No
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmClear(true)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                title="Clear current sheet rows"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -280,7 +345,7 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
               <th className="w-12 px-2 py-1.5 border-r border-slate-300 bg-slate-200/80 font-mono text-center font-semibold text-slate-600 select-none">
                 #
               </th>
-              {currentConfig.columns.map((colName, index) => (
+              {currentConfig.columns.map((_, index) => (
                 <th
                   key={index}
                   className="px-3 py-1.5 border-r border-slate-300 font-mono font-medium text-slate-600 text-center select-none bg-slate-100 min-w-[140px]"
@@ -322,15 +387,15 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
                   className="py-12 text-center text-slate-400 bg-slate-50/50"
                 >
                   <FileSpreadsheet className="w-8 h-8 mx-auto text-slate-300 mb-2" />
-                  <p className="font-medium text-slate-600">No submissions in this sheet yet</p>
+                  <p className="font-medium text-slate-600">No submissions in "{currentConfig.title}" yet</p>
                   <p className="text-xs text-slate-400 mt-1">
-                    Submit the form on the left or click "+ Add Row" above.
+                    Submit the form or click "+ Add Row" above.
                   </p>
                 </td>
               </tr>
             ) : (
               filteredData.map((row, rowIndex) => {
-                const sheetRowNum = rowIndex + 2; // header is row 1
+                const sheetRowNum = rowIndex + 2;
                 const isNewest = rowIndex === filteredData.length - 1;
 
                 return (
@@ -340,15 +405,14 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
                       isNewest ? 'bg-emerald-50/40' : 'hover:bg-slate-50'
                     }`}
                   >
-                    {/* Row Number */}
                     <td className="w-12 px-2 py-2 border-r border-slate-300 bg-slate-100 font-mono text-center text-slate-500 select-none">
                       {sheetRowNum}
                     </td>
 
-                    {/* Data Cells */}
                     {row.map((val, colIndex) => {
                       const isSelected =
                         selectedCell?.row === sheetRowNum && selectedCell?.col === colIndex;
+                      const strVal = String(val);
 
                       return (
                         <td
@@ -357,7 +421,7 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
                             setSelectedCell({
                               row: sheetRowNum,
                               col: colIndex,
-                              value: String(val),
+                              value: strVal,
                             })
                           }
                           className={`px-3 py-2 border-r border-slate-200 truncate max-w-[260px] font-sans text-slate-700 cursor-cell transition-all ${
@@ -365,11 +429,25 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
                               ? 'ring-2 ring-emerald-500 bg-emerald-50/80 font-medium'
                               : ''
                           }`}
-                          title={String(val)}
+                          title={strVal}
                         >
                           {colIndex === 0 ? (
                             <span className="font-mono text-[11px] text-slate-500">{val}</span>
-                          ) : String(val).startsWith('+') ? (
+                          ) : strVal.startsWith('http') || strVal.startsWith('data:image') ? (
+                            <span className="font-mono text-[11px] text-emerald-700 underline">
+                              {strVal.startsWith('data:image') ? '[Image Uploaded]' : strVal}
+                            </span>
+                          ) : strVal === 'TRUE' || strVal === 'FALSE' ? (
+                            <span
+                              className={`inline-block px-1.5 py-0.5 rounded font-mono text-[10px] font-semibold ${
+                                strVal === 'TRUE'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-slate-100 text-slate-600'
+                              }`}
+                            >
+                              {strVal}
+                            </span>
+                          ) : strVal.startsWith('+') ? (
                             <span className="font-mono text-slate-600">{val}</span>
                           ) : val === 'VIP' ? (
                             <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-100 text-purple-700">
@@ -379,12 +457,12 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
                             <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-100 text-rose-700">
                               Admin
                             </span>
-                          ) : String(val).includes('★') ? (
+                          ) : strVal.includes('★') ? (
                             <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
                               {val}
                             </span>
                           ) : (
-                            String(val)
+                            strVal
                           )}
                         </td>
                       );
@@ -401,8 +479,11 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
       <div className="bg-[#f0f3f6] border-t border-slate-300 px-3 py-1.5 flex items-center justify-between gap-3 text-xs select-none">
         <div className="flex items-center gap-1.5 overflow-x-auto">
           <button
-            onClick={() => onSelectTab('registration')}
-            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-t-md font-medium border-t-2 transition-all cursor-pointer ${
+            onClick={() => {
+              onSelectTab('registration');
+              setConfirmClear(false);
+            }}
+            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-t-md font-medium border-t-2 transition-all cursor-pointer whitespace-nowrap ${
               activeSheetTab === 'registration'
                 ? 'bg-white text-emerald-800 border-emerald-600 shadow-sm font-semibold'
                 : 'text-slate-600 hover:bg-slate-200 border-transparent'
@@ -416,8 +497,11 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
           </button>
 
           <button
-            onClick={() => onSelectTab('userDetails')}
-            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-t-md font-medium border-t-2 transition-all cursor-pointer ${
+            onClick={() => {
+              onSelectTab('userDetails');
+              setConfirmClear(false);
+            }}
+            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-t-md font-medium border-t-2 transition-all cursor-pointer whitespace-nowrap ${
               activeSheetTab === 'userDetails'
                 ? 'bg-white text-blue-800 border-blue-600 shadow-sm font-semibold'
                 : 'text-slate-600 hover:bg-slate-200 border-transparent'
@@ -431,8 +515,11 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
           </button>
 
           <button
-            onClick={() => onSelectTab('feedback')}
-            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-t-md font-medium border-t-2 transition-all cursor-pointer ${
+            onClick={() => {
+              onSelectTab('feedback');
+              setConfirmClear(false);
+            }}
+            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-t-md font-medium border-t-2 transition-all cursor-pointer whitespace-nowrap ${
               activeSheetTab === 'feedback'
                 ? 'bg-white text-amber-900 border-amber-600 shadow-sm font-semibold'
                 : 'text-slate-600 hover:bg-slate-200 border-transparent'
@@ -444,6 +531,33 @@ export const GoogleSheetSimulator: React.FC<Props> = ({
               {feedbacks.length}
             </span>
           </button>
+
+          {/* Dynamic Custom Form Tabs */}
+          {customForms.map((cf) => {
+            const count = customSubmissions.filter((s) => s.formId === cf.id).length;
+            const isActive =
+              activeSheetTab === cf.id || activeSheetTab === cf.settings.sheetName;
+            return (
+              <button
+                key={cf.id}
+                onClick={() => {
+                  onSelectTab(cf.id);
+                  setConfirmClear(false);
+                }}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-t-md font-medium border-t-2 transition-all cursor-pointer whitespace-nowrap ${
+                  isActive
+                    ? 'bg-white text-purple-900 border-purple-600 shadow-sm font-semibold'
+                    : 'text-slate-600 hover:bg-slate-200 border-transparent'
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-purple-500" />
+                <span>{cf.settings.sheetName || cf.settings.title}</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-200 text-slate-700">
+                  {count}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="flex items-center gap-3 text-slate-500 text-[11px] shrink-0 font-medium">

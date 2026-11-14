@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GITHUB_REPO_FILES } from '../data/defaultData';
+import { getGithubRepoFiles } from '../data/defaultData';
 import {
   FolderGit2,
   FileCode,
@@ -15,15 +15,20 @@ import {
 } from 'lucide-react';
 import JSZip from 'jszip';
 
-export const GithubProjectHub: React.FC = () => {
+interface Props {
+  scriptUrl?: string;
+}
+
+export const GithubProjectHub: React.FC<Props> = ({ scriptUrl }) => {
   const [selectedFileName, setSelectedFileName] = useState<string>('index.html');
   const [copiedFile, setCopiedFile] = useState(false);
   const [copiedGitCmd, setCopiedGitCmd] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
   const [zipSuccess, setZipSuccess] = useState(false);
 
-  const fileList = Object.keys(GITHUB_REPO_FILES);
-  const currentFileContent = GITHUB_REPO_FILES[selectedFileName as keyof typeof GITHUB_REPO_FILES] || '';
+  const activeFiles = getGithubRepoFiles(scriptUrl);
+  const fileList = Object.keys(activeFiles);
+  const currentFileContent = activeFiles[selectedFileName as keyof typeof activeFiles] || '';
 
   const gitCommands = `# 1. Create project folder & enter it
 mkdir f-docx
@@ -68,7 +73,7 @@ git push -u origin main`;
       
       const folder = zip.folder('f-docx') || zip;
       fileList.forEach((filename) => {
-        folder.file(filename, GITHUB_REPO_FILES[filename as keyof typeof GITHUB_REPO_FILES]);
+        folder.file(filename, activeFiles[filename as keyof typeof activeFiles]);
       });
 
       const blob = await zip.generateAsync({ type: 'blob' });

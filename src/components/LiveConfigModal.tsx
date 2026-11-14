@@ -20,6 +20,11 @@ export const LiveConfigModal: React.FC<Props> = ({
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
 
+  React.useEffect(() => {
+    setUrl(config.scriptUrl || '');
+    setSyncEnabled(config.syncToRealSheet || false);
+  }, [config.scriptUrl, config.syncToRealSheet, isOpen]);
+
   if (!isOpen) return null;
 
   const handleTestEndpoint = async () => {
@@ -106,13 +111,40 @@ export const LiveConfigModal: React.FC<Props> = ({
             <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
               Target Webhook / Google Sheets Endpoint URL
             </label>
-            <input
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://script.google.com/macros/s/.../exec OR SheetDB URL"
-              className="w-full px-3.5 py-2.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-slate-800"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec OR SheetDB URL"
+                className="w-full px-3.5 py-2.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-slate-800"
+              />
+              {url.endsWith('/dev') && (
+                <button
+                  type="button"
+                  onClick={() => setUrl(url.replace(/\/dev$/, '/exec'))}
+                  className="shrink-0 px-2.5 py-2 text-xs font-semibold bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-xl border border-amber-300 transition-colors cursor-pointer"
+                  title="Switch to public /exec URL"
+                >
+                  Switch to /exec
+                </button>
+              )}
+              {url.endsWith('/exec') && (
+                <button
+                  type="button"
+                  onClick={() => setUrl(url.replace(/\/exec$/, '/dev'))}
+                  className="shrink-0 px-2.5 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl border border-slate-300 transition-colors cursor-pointer"
+                  title="Switch to developer /dev URL"
+                >
+                  Switch to /dev
+                </button>
+              )}
+            </div>
+            {url.endsWith('/dev') && (
+              <p className="text-[11px] text-amber-800 bg-amber-50 p-2 rounded-lg border border-amber-200 mt-2">
+                💡 <strong>Notice:</strong> <code>/dev</code> URLs require Google account authentication in the same browser. For public website visitors, use <code>/exec</code> deployed with access set to &ldquo;Anyone&rdquo;.
+              </p>
+            )}
             <span className="text-[11px] text-slate-500 mt-1 block">
               Enter your Google Apps Script Web App URL, SheetDB API, Zapier, or custom webhook URL.
             </span>

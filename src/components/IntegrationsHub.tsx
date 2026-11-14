@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { WebAppConfig } from '../types';
+import { APPS_SCRIPT_CODE_UNIFIED } from '../data/defaultData';
 import {
   Globe,
   Zap,
@@ -23,15 +24,21 @@ import {
 interface Props {
   webAppConfig: WebAppConfig;
   onSaveConfig: (cfg: WebAppConfig) => void;
+  onUpdateUrl?: (url: string) => void;
 }
 
-export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig }) => {
+export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig, onUpdateUrl }) => {
   const [url, setUrl] = useState(webAppConfig.scriptUrl || '');
-  const [syncEnabled, setSyncEnabled] = useState(webAppConfig.syncToRealSheet || false);
+  const [syncEnabled, setSyncEnabled] = useState(webAppConfig.syncToRealSheet ?? true);
+
+  // Keep local input in sync if parent changes
+  React.useEffect(() => {
+    setUrl(webAppConfig.scriptUrl || '');
+  }, [webAppConfig.scriptUrl]);
   const [activePayloadTab, setActivePayloadTab] = useState<'registration' | 'userDetails' | 'feedback'>('registration');
   const [copiedPayload, setCopiedPayload] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{ status: 'success' | 'error'; message: string; spreadsheetUrl?: string | null } | null>(null);
   const [showGuide, setShowGuide] = useState(true);
 
   const samplePayloads = {
@@ -81,12 +88,22 @@ export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig })
     setTimeout(() => setCopiedPayload(false), 2000);
   };
 
+  const [savedNotification, setSavedNotification] = useState(false);
+  const [copiedScript, setCopiedScript] = useState(false);
+
+  const handleCopyScript = () => {
+    navigator.clipboard.writeText(APPS_SCRIPT_CODE_UNIFIED);
+    setCopiedScript(true);
+    setTimeout(() => setCopiedScript(false), 2500);
+  };
+
   const handleSave = () => {
     onSaveConfig({
       scriptUrl: url.trim(),
       syncToRealSheet: syncEnabled && !!url.trim(),
     });
-    alert('Endpoint settings saved! Forms will now dispatch submissions to this URL.');
+    setSavedNotification(true);
+    setTimeout(() => setSavedNotification(false), 4000);
   };
 
   const handleTestPing = async () => {
@@ -101,17 +118,47 @@ export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig })
     setTesting(true);
     setTestResult(null);
 
+    const payload = samplePayloads[activePayloadTab];
+
+    try {
+      // First try real diagnostic ping through server API to inspect real Google response
+      const diagRes = await fetch('/api/ping-endpoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url.trim(), payload }),
+      });
+
+      if (diagRes.ok) {
+        const diagData = await diagRes.json();
+        if (diagData.success) {
+          setTestResult({
+            status: 'success',
+            message: diagData.message || 'Endpoint successfully verified and received test payload!',
+            spreadsheetUrl: diagData.spreadsheetUrl || null,
+          });
+        } else {
+          setTestResult({
+            status: 'error',
+            message: diagData.message || 'Endpoint test failed.',
+          });
+        }
+        return;
+      }
+    } catch {
+      // Fallback to direct client ping
+    }
+
     try {
       await fetch(url.trim(), {
         method: 'POST',
         mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(samplePayloads[activePayloadTab]),
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload),
       });
 
       setTestResult({
         status: 'success',
-        message: 'Ping payload dispatched successfully! Check your spreadsheet/webhook endpoint to verify the entry.',
+        message: 'Ping payload dispatched to your endpoint! Check your spreadsheet to confirm the row was added.',
       });
     } catch (err: any) {
       setTestResult({
@@ -151,15 +198,56 @@ export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig })
                   : '○ Using Local Simulator'}
               </span>
             </div>
-            <input
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://script.google.com/macros/s/.../exec OR https://sheetdb.io/api/v1/..."
-              className="w-full px-3.5 py-2.5 text-xs font-mono bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-slate-800"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="url"
+                value={url}
+                onChange={(e) => {
+                  const newVal = e.target.value;
+                  setUrl(newVal);
+                  onUpdateUrl?.(newVal);
+                }}
+                placeholder="https://script.google.com/macros/s/.../exec OR https://sheetdb.io/api/v1/..."
+                className="w-full px-3.5 py-2.5 text-xs font-mono bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-slate-800"
+              />
+              {url.endsWith('/dev') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const execUrl = url.replace(/\/dev$/, '/exec');
+                    setUrl(execUrl);
+                    onUpdateUrl?.(execUrl);
+                  }}
+                  className="shrink-0 px-2.5 py-2 text-xs font-semibold bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-xl border border-amber-300 transition-colors cursor-pointer"
+                  title="Switch to public /exec URL"
+                >
+                  Switch to /exec
+                </button>
+              )}
+              {url.endsWith('/exec') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const devUrl = url.replace(/\/exec$/, '/dev');
+                    setUrl(devUrl);
+                    onUpdateUrl?.(devUrl);
+                  }}
+                  className="shrink-0 px-2.5 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl border border-slate-300 transition-colors cursor-pointer"
+                  title="Switch to developer /dev URL"
+                >
+                  Switch to /dev
+                </button>
+              )}
+            </div>
+
+            {url.endsWith('/dev') && (
+              <div className="mt-2 p-2.5 bg-amber-50/90 border border-amber-200/90 rounded-xl text-xs text-amber-900 leading-relaxed">
+                <span className="font-bold">⚠️ Notice on /dev links:</span> In Google Apps Script, URLs ending in <code className="bg-amber-100 px-1 py-0.5 rounded font-mono text-[11px]">/dev</code> are developer test links that only work when logged into Google in the same browser. To allow website visitors to submit without Google login, deploy via <span className="font-semibold">Deploy → New deployment → Web app → Who has access: Anyone</span>, and use the URL ending in <code className="bg-amber-100 px-1 py-0.5 rounded font-mono text-[11px]">/exec</code>.
+              </div>
+            )}
+
             <span className="text-[11px] text-slate-500 mt-1 block">
-              Leave blank to test with the built-in real-time spreadsheet simulator, or enter your live endpoint to save entries directly to external sheets.
+              Enter any Google Apps Script Web App URL or Webhook. Changes sync dynamically across all forms and export files in real time.
             </span>
           </div>
 
@@ -168,7 +256,13 @@ export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig })
               type="checkbox"
               id="syncCheckbox"
               checked={syncEnabled}
-              onChange={(e) => setSyncEnabled(e.target.checked)}
+              onChange={(e) => {
+                setSyncEnabled(e.target.checked);
+                onSaveConfig({
+                  scriptUrl: url.trim(),
+                  syncToRealSheet: e.target.checked && !!url.trim(),
+                });
+              }}
               className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
             />
             <label htmlFor="syncCheckbox" className="text-xs text-slate-700 font-medium cursor-pointer">
@@ -182,6 +276,22 @@ export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig })
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors cursor-pointer"
             >
               Save Endpoint Settings
+            </button>
+
+            <button
+              onClick={() => {
+                const defaultUrl = 'https://script.google.com/macros/s/AKfycbzQFGxzs1ftTpgZKd-MOBciCRvBaYqyM92VLO2qjtrt/dev';
+                setUrl(defaultUrl);
+                setSyncEnabled(true);
+                onUpdateUrl?.(defaultUrl);
+                onSaveConfig({
+                  scriptUrl: defaultUrl,
+                  syncToRealSheet: true,
+                });
+              }}
+              className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition-colors cursor-pointer"
+            >
+              Reset to Default Google Script
             </button>
 
             <button
@@ -201,22 +311,69 @@ export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig })
                 </>
               )}
             </button>
+            <button
+              onClick={handleCopyScript}
+              type="button"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+            >
+              {copiedScript ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedScript ? 'Copied Apps Script!' : 'Copy Apps Script (Code.gs)'}</span>
+            </button>
           </div>
+
+          {savedNotification && (
+            <div className="p-3 rounded-xl border border-emerald-300 bg-emerald-50 text-emerald-900 text-xs flex items-center gap-2 animate-fadeIn">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span className="font-semibold">Endpoint configuration saved! Forms will dispatch to this URL.</span>
+            </div>
+          )}
 
           {testResult && (
             <div
-              className={`p-3 rounded-xl border text-xs flex items-center gap-2 animate-fadeIn ${
+              className={`p-3.5 rounded-xl border text-xs animate-fadeIn ${
                 testResult.status === 'success'
                   ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                   : 'bg-rose-50 border-rose-200 text-rose-800'
               }`}
             >
-              {testResult.status === 'success' ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-              )}
-              <span>{testResult.message}</span>
+              <div className="flex items-start gap-2.5">
+                {testResult.status === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                )}
+                <div className="flex-1 space-y-2">
+                  <p className="font-medium leading-relaxed">{testResult.message}</p>
+                  {testResult.spreadsheetUrl && (
+                    <div className="pt-1">
+                      <a
+                        href={testResult.spreadsheetUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Open Connected Google Sheet</span>
+                      </a>
+                    </div>
+                  )}
+                  {(testResult.message.includes('doPost') || testResult.message.includes('Google Sheet')) && testResult.status === 'error' && (
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={handleCopyScript}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-xs cursor-pointer"
+                      >
+                        {copiedScript ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedScript ? 'Copied Apps Script Code!' : 'Copy Working Apps Script Code'}</span>
+                      </button>
+                      <span className="block text-[11px] text-rose-700 mt-1">
+                        Open your Google Sheet → Extensions → Apps Script, paste the code, then Deploy → New deployment → Web app → Who has access: Anyone.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </div>

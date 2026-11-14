@@ -1,6 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { FormType, RegistrationSubmission, UserDetailsSubmission, FeedbackSubmission, WebAppConfig } from './types';
+import {
+  FormType,
+  RegistrationSubmission,
+  UserDetailsSubmission,
+  FeedbackSubmission,
+  WebAppConfig,
+  CustomFormConfig,
+  CustomFormSubmission,
+} from './types';
 import { initialRegistrations, initialUserDetails, initialFeedbacks } from './data/defaultData';
+import {
+  createStarterCustomForms,
+  getOrderedColumnsForForm,
+} from './data/formBuilderCatalog';
 import { Navbar, MainNavTab } from './components/Navbar';
 import { RegistrationForm } from './components/RegistrationForm';
 import { UserDetailsForm } from './components/UserDetailsForm';
@@ -10,6 +22,7 @@ import { AnalyticsHub } from './components/AnalyticsHub';
 import { IntegrationsHub } from './components/IntegrationsHub';
 import { GithubProjectHub } from './components/GithubProjectHub';
 import { LiveConfigModal } from './components/LiveConfigModal';
+import { FormBuilderWorkspace } from './components/form-builder/FormBuilderWorkspace';
 import {
   FileSpreadsheet,
   ArrowRight,
@@ -25,6 +38,9 @@ import {
   Layers
 } from 'lucide-react';
 import { playSuccessChime } from './utils/audio';
+
+export const DEFAULT_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbzQFGxzs1ftTpgZKd-MOBciCRvBaYqyM92VLO2qjtrt/dev';
 
 export default function App() {
   const [registrations, setRegistrations] = useState<RegistrationSubmission[]>(() => {
@@ -57,20 +73,50 @@ export default function App() {
   const [webAppConfig, setWebAppConfig] = useState<WebAppConfig>(() => {
     try {
       const saved = localStorage.getItem('fdx_config');
-      return saved
-        ? JSON.parse(saved)
-        : {
-            scriptUrl: '',
-            syncToRealSheet: false,
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // If it was the previous placeholder URL, migrate to the user's latest provided URL
+        if (parsed.scriptUrl && !parsed.scriptUrl.includes('AKfycby4b4Vn8X5UVXXhriyus0rOHNUgJRPdW2ZtbTgd13vnfihFP348YHy5LjZTswwomGRaSg')) {
+          return {
+            ...parsed,
+            syncToRealSheet: parsed.syncToRealSheet !== undefined ? parsed.syncToRealSheet : true,
           };
+        }
+      }
+    } catch {}
+    return {
+      scriptUrl: DEFAULT_SCRIPT_URL,
+      syncToRealSheet: true,
+    };
+  });
+
+  const [customForms, setCustomForms] = useState<CustomFormConfig[]>(() => {
+    try {
+      const saved = localStorage.getItem('fdx_custom_forms');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return createStarterCustomForms();
+  });
+
+  const [customSubmissions, setCustomSubmissions] = useState<CustomFormSubmission[]>(() => {
+    try {
+      const saved = localStorage.getItem('fdx_custom_submissions');
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return { scriptUrl: '', syncToRealSheet: false };
+      return [];
     }
   });
 
+  const [activeCustomFormId, setActiveCustomFormId] = useState<string>(
+    () => customForms[0]?.id || 'form_onboarding_starter'
+  );
+
   const [activeNavTab, setActiveNavTab] = useState<MainNavTab>('forms');
-  const [activeFormTab, setActiveFormTab] = useState<FormType>('registration');
-  const [activeSheetTab, setActiveSheetTab] = useState<FormType>('registration');
+  const [activeFormTab, setActiveFormTab] = useState<FormType>('feedback');
+  const [activeSheetTab, setActiveSheetTab] = useState<string>('feedback');
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [splitViewMode, setSplitViewMode] = useState(true);
 
@@ -99,6 +145,18 @@ export default function App() {
     } catch {}
   }, [webAppConfig]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('fdx_custom_forms', JSON.stringify(customForms));
+    } catch {}
+  }, [customForms]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('fdx_custom_submissions', JSON.stringify(customSubmissions));
+    } catch {}
+  }, [customSubmissions]);
+
   const handleAddRegistration = (sub: RegistrationSubmission) => {
     setRegistrations((prev) => [...prev, sub]);
     setActiveSheetTab('registration');
@@ -114,13 +172,21 @@ export default function App() {
     setActiveSheetTab('feedback');
   };
 
-  const handleClearCurrentSheet = (tab: FormType) => {
-    if (tab === 'registration') setRegistrations([]);
-    if (tab === 'userDetails') setUserDetails([]);
-    if (tab === 'feedback') setFeedbacks([]);
+  const handleAddCustomSubmission = (sub: CustomFormSubmission) => {
+    setCustomSubmissions((prev) => [...prev, sub]);
+    setActiveSheetTab(sub.formId);
   };
 
-  const handleAddDummyRow = (tab: FormType) => {
+  const handleClearCurrentSheet = (tab: string) => {
+    if (tab === 'registration') setRegistrations([]);
+    else if (tab === 'userDetails') setUserDetails([]);
+    else if (tab === 'feedback') setFeedbacks([]);
+    else {
+      setCustomSubmissions((prev) => prev.filter((s) => s.formId !== tab));
+    }
+  };
+
+  const handleAddDummyRow = (tab: string) => {
     const timestamp = new Date().toLocaleString();
     if (tab === 'registration') {
       const names = ['Kiran Varma', 'Tara Simmons', 'Hassan Ali', 'Mei Ling'];
@@ -154,7 +220,7 @@ export default function App() {
         internalNotes: 'Automated test row addition.',
         submittedAt: timestamp,
       });
-    } else {
+    } else if (tab === 'feedback') {
       const messages = [
         'Really impressed with the speed of this form integration!',
         'Real-time spreadsheet syncing without server maintenance is great.',
@@ -172,6 +238,37 @@ export default function App() {
         priority: 'Medium',
         submittedAt: timestamp,
       });
+    } else {
+      const cf = customForms.find((f) => f.id === tab);
+      if (cf) {
+        const colDefs = getOrderedColumnsForForm(cf.fields);
+        handleAddCustomSubmission({
+          id: `csub_${Date.now()}`,
+          formId: cf.id,
+          formTitle: cf.settings.title,
+          sheetName: cf.settings.sheetName || 'CustomResponses',
+          submittedAt: timestamp,
+          columns: colDefs.map((col) => ({
+            header: col.header,
+            type: col.type,
+            value:
+              col.type === 'NUMBER'
+                ? 5
+                : col.type === 'BOOLEAN'
+                ? true
+                : col.type === 'DATE'
+                ? new Date().toISOString().slice(0, 10)
+                : col.type === 'TIME'
+                ? '10:30'
+                : col.type === 'DATETIME'
+                ? new Date().toISOString().slice(0, 16).replace('T', ' ')
+                : col.type === 'FILE URL' || col.type === 'IMAGE URL'
+                ? 'https://drive.google.com/file/d/sample_upload/view'
+                : 'Sample Entry',
+          })),
+          rawValues: {},
+        });
+      }
     }
   };
 
@@ -208,7 +305,90 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const totalSubmissions = registrations.length + userDetails.length + feedbacks.length;
+  const totalSubmissions =
+    registrations.length + userDetails.length + feedbacks.length + customSubmissions.length;
+
+  const [pingTesting, setPingTesting] = useState(false);
+  const [pingFeedback, setPingFeedback] = useState<{ status: 'success' | 'error'; message: string } | null>(null);
+
+  const handleUpdateEndpoint = (newUrl: string) => {
+    setWebAppConfig((prev) => ({
+      ...prev,
+      scriptUrl: newUrl.trim(),
+      syncToRealSheet: !!newUrl.trim(),
+    }));
+  };
+
+  const handleTestPing = async () => {
+    if (!webAppConfig.scriptUrl?.trim()) {
+      setPingFeedback({
+        status: 'error',
+        message: 'No endpoint URL configured. Enter a valid Google Apps Script or Webhook URL.',
+      });
+      return;
+    }
+
+    setPingTesting(true);
+    setPingFeedback(null);
+
+    try {
+      const diagRes = await fetch('/api/ping-endpoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: webAppConfig.scriptUrl.trim(),
+          payload: {
+            formType: 'registration',
+            fullName: 'Live Sync Ping Test',
+            email: 'ping-test@example.com',
+            organization: 'f-docx Ping Suite',
+            notes: 'Test ping to verify spreadsheet append.',
+            submittedAt: new Date().toLocaleString(),
+          },
+        }),
+      });
+
+      if (diagRes.ok) {
+        const diagData = await diagRes.json();
+        setPingFeedback({
+          status: diagData.success ? 'success' : 'error',
+          message: diagData.message || (diagData.success ? 'Ping verified!' : 'Ping failed'),
+        });
+        return;
+      }
+    } catch {
+      // Fallback to client fetch
+    }
+
+    try {
+      await fetch(webAppConfig.scriptUrl.trim(), {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          formType: 'registration',
+          fullName: 'Live Sync Ping Test',
+          email: 'ping-test@example.com',
+          organization: 'f-docx Ping Suite',
+          notes: 'Test ping to verify spreadsheet append.',
+          submittedAt: new Date().toLocaleString(),
+        }),
+      });
+
+      setPingFeedback({
+        status: 'success',
+        message: 'Ping dispatched! Check your Google Sheet to verify the new row appeared.',
+      });
+    } catch (err: any) {
+      setPingFeedback({
+        status: 'error',
+        message: `Ping failed: ${err.message || 'Network blocked'}`,
+      });
+    } finally {
+      setPingTesting(false);
+      setTimeout(() => setPingFeedback(null), 8000);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-900 font-sans">
@@ -235,38 +415,133 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {/* Banner: Visual Flow Architecture (Shown in Forms tab) */}
         {activeNavTab === 'forms' && (
-          <div className="mb-6 bg-gradient-to-r from-emerald-950 via-slate-900 to-teal-950 text-white rounded-2xl p-5 sm:p-6 shadow-sm border border-emerald-900/40">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-              <div>
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 mb-2">
-                  <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                  f-docx Form Sync Engine
+          <div className="space-y-4 mb-6">
+            <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-teal-950 text-white rounded-2xl p-5 sm:p-6 shadow-sm border border-emerald-900/40">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 mb-2">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                    f-docx Live Form Sync
+                  </div>
+                  <h1 className="text-xl sm:text-2xl font-bold tracking-tight">
+                    HTML Form to Google Sheets Automation Engine
+                  </h1>
+                  <p className="text-slate-300 text-xs sm:text-sm mt-1 max-w-2xl leading-relaxed">
+                    Submit any of the 3 menu forms below. Every submission instantly maps fields and appends a row to your connected Google Sheet.
+                  </p>
                 </div>
-                <h1 className="text-xl sm:text-2xl font-bold tracking-tight">
-                  HTML Form to Google Sheets Automation Engine
-                </h1>
-                <p className="text-slate-300 text-xs sm:text-sm mt-1 max-w-2xl leading-relaxed">
-                  Submit any of the 3 menu forms below. Every submission instantly maps fields and appends a row to the corresponding Google Sheets tab.
-                </p>
+
+                {/* Data Flow Diagram + Builder CTA */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 self-start lg:self-auto shrink-0">
+                  <div className="flex items-center gap-2 sm:gap-3 text-xs bg-slate-800/80 p-3 rounded-xl border border-slate-700/60 font-medium">
+                    <div className="flex items-center gap-1.5 text-emerald-300">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                      <span>HTML Form</span>
+                    </div>
+                    <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
+                    <div className="flex items-center gap-1.5 text-amber-300">
+                      <Zap className="w-3.5 h-3.5" />
+                      <span>Endpoint Sync</span>
+                    </div>
+                    <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
+                    <div className="flex items-center gap-1.5 text-emerald-400">
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      <span>Google Sheets Row</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setActiveNavTab('builder')}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-sm transition-colors cursor-pointer"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Open Form Builder</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Dynamic Real-time Connected Endpoint Quick Bar */}
+            <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-sm">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <label className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                      Connected Endpoint URL (Dynamically updates in real-time)
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="url"
+                      value={webAppConfig.scriptUrl}
+                      onChange={(e) => handleUpdateEndpoint(e.target.value)}
+                      placeholder="Paste your Google Apps Script or Webhook URL here..."
+                      className="w-full px-3 py-1.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-slate-800"
+                    />
+                    {webAppConfig.scriptUrl?.endsWith('/dev') && (
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateEndpoint(webAppConfig.scriptUrl.replace(/\/dev$/, '/exec'))}
+                        className="shrink-0 px-2.5 py-1.5 text-xs font-semibold bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg border border-amber-300 transition-colors cursor-pointer"
+                        title="Switch to public /exec URL"
+                      >
+                        Switch to /exec
+                      </button>
+                    )}
+                    {webAppConfig.scriptUrl?.endsWith('/exec') && (
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateEndpoint(webAppConfig.scriptUrl.replace(/\/exec$/, '/dev'))}
+                        className="shrink-0 px-2.5 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 transition-colors cursor-pointer"
+                        title="Switch to developer /dev URL"
+                      >
+                        Switch to /dev
+                      </button>
+                    )}
+                  </div>
+                  {webAppConfig.scriptUrl?.endsWith('/dev') && (
+                    <p className="text-[11px] text-amber-700 mt-1 flex items-center gap-1">
+                      <span>💡 <strong>Tip:</strong> <code className="bg-amber-100 px-1 rounded text-[10px]">/dev</code> URLs require Google login. Click <strong>Switch to /exec</strong> when deploying as a public Web app.</span>
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={handleTestPing}
+                    disabled={pingTesting || !webAppConfig.scriptUrl}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-800 border border-emerald-200 transition-colors cursor-pointer"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>{pingTesting ? 'Pinging...' : 'Test Ping'}</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleUpdateEndpoint(DEFAULT_SCRIPT_URL)}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
+                    title="Restore default Google Apps Script endpoint"
+                  >
+                    Reset
+                  </button>
+                </div>
               </div>
 
-              {/* Data Flow Diagram */}
-              <div className="flex items-center gap-2 sm:gap-3 text-xs bg-slate-800/80 p-3 rounded-xl border border-slate-700/60 self-start lg:self-auto shrink-0 font-medium">
-                <div className="flex items-center gap-1.5 text-emerald-300">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                  <span>HTML Form</span>
+              {pingFeedback && (
+                <div
+                  className={`mt-2.5 p-2.5 rounded-lg text-xs flex items-center gap-2 animate-fadeIn ${
+                    pingFeedback.status === 'success'
+                      ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
+                      : 'bg-rose-50 border border-rose-200 text-rose-800'
+                  }`}
+                >
+                  {pingFeedback.status === 'success' ? (
+                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                  ) : (
+                    <Zap className="w-4 h-4 text-rose-600 shrink-0" />
+                  )}
+                  <span>{pingFeedback.message}</span>
                 </div>
-                <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
-                <div className="flex items-center gap-1.5 text-amber-300">
-                  <Zap className="w-3.5 h-3.5" />
-                  <span>Spreadsheet Sync</span>
-                </div>
-                <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
-                <div className="flex items-center gap-1.5 text-emerald-400">
-                  <FileSpreadsheet className="w-3.5 h-3.5" />
-                  <span>Google Sheets Row</span>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         )}
@@ -322,10 +597,14 @@ export default function App() {
                   registrations={registrations}
                   userDetails={userDetails}
                   feedbacks={feedbacks}
+                  customForms={customForms}
+                  customSubmissions={customSubmissions}
                   activeSheetTab={activeSheetTab}
                   onSelectTab={(tab) => {
                     setActiveSheetTab(tab);
-                    setActiveFormTab(tab);
+                    if (tab === 'registration' || tab === 'userDetails' || tab === 'feedback') {
+                      setActiveFormTab(tab);
+                    }
                   }}
                   onClearCurrentSheet={handleClearCurrentSheet}
                   onAddDummyRow={handleAddDummyRow}
@@ -333,6 +612,25 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* View 1B: Dynamic Form Builder & Customizer */}
+        {activeNavTab === 'builder' && (
+          <FormBuilderWorkspace
+            forms={customForms}
+            activeFormId={activeCustomFormId}
+            webAppConfig={webAppConfig}
+            onSelectFormId={setActiveCustomFormId}
+            onSaveForms={setCustomForms}
+            onSubmitCustomForm={handleAddCustomSubmission}
+            onOpenSheetView={(sheetNameOrId) => {
+              const found = customForms.find(
+                (f) => f.id === sheetNameOrId || f.settings.sheetName === sheetNameOrId
+              );
+              setActiveSheetTab(found ? found.id : activeCustomFormId);
+              setActiveNavTab('sheet');
+            }}
+          />
         )}
 
         {/* View 2: Standalone Full-Width Google Sheet DB */}
@@ -344,7 +642,7 @@ export default function App() {
                   Google Sheet Database Viewer
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Full-screen view of your active Google Sheets database with tabs for all 3 forms.
+                  Full-screen view of your active Google Sheets database with tabs for built-in and custom forms.
                 </p>
               </div>
 
@@ -360,6 +658,8 @@ export default function App() {
               registrations={registrations}
               userDetails={userDetails}
               feedbacks={feedbacks}
+              customForms={customForms}
+              customSubmissions={customSubmissions}
               activeSheetTab={activeSheetTab}
               onSelectTab={setActiveSheetTab}
               onClearCurrentSheet={handleClearCurrentSheet}
@@ -383,11 +683,14 @@ export default function App() {
           <IntegrationsHub
             webAppConfig={webAppConfig}
             onSaveConfig={setWebAppConfig}
+            onUpdateUrl={handleUpdateEndpoint}
           />
         )}
 
         {/* View 5: GitHub "f-docx" Project Hub & ZIP Exporter */}
-        {activeNavTab === 'github' && <GithubProjectHub />}
+        {activeNavTab === 'github' && (
+          <GithubProjectHub scriptUrl={webAppConfig.scriptUrl} />
+        )}
       </main>
 
       {/* Live Endpoint Configuration Modal */}
@@ -413,6 +716,12 @@ export default function App() {
               className="hover:text-emerald-700 cursor-pointer"
             >
               Forms
+            </button>
+            <button
+              onClick={() => setActiveNavTab('builder')}
+              className="hover:text-emerald-700 cursor-pointer"
+            >
+              Form Builder
             </button>
             <button
               onClick={() => setActiveNavTab('sheet')}

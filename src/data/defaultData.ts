@@ -121,6 +121,18 @@ export const initialFeedbacks: FeedbackSubmission[] = [
     priority: 'High',
     submittedAt: '11/11/2026, 09:50:41 AM',
   },
+  {
+    id: 'fb-4',
+    customerName: 'Samira Patel',
+    email: 'samira.patel@fdx-project.io',
+    category: 'UI / UX Design',
+    rating: 5,
+    npsScore: 10,
+    feedbackMessage: 'Executed live feedback submission! Direct Google Sheets sync is connected and recording rows seamlessly.',
+    wouldRecommend: 'Yes',
+    priority: 'High',
+    submittedAt: '11/11/2026, 11:00:00 AM',
+  },
 ];
 
 export const APPS_SCRIPT_CODE_UNIFIED = `/**
@@ -207,6 +219,39 @@ function doPost(e) {
         data.wouldRecommend || "Yes",
         data.priority || "Medium"
       ]);
+    } else if (formType === "customForm") {
+      const sheetName = data.sheetName || "CustomResponses";
+      let sheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+      const headers = Array.isArray(data.headers) ? data.headers : ["Timestamp"];
+      const rowValues = Array.isArray(data.rowValues) ? data.rowValues.slice() : [timestamp];
+
+      // Save uploaded files/images into Google Drive and store URLs in corresponding columns
+      if (Array.isArray(data.uploadedFiles) && data.uploadedFiles.length > 0) {
+        const folders = DriveApp.getFoldersByName("f-docx Uploads");
+        const folder = folders.hasNext() ? folders.next() : DriveApp.createFolder("f-docx Uploads");
+        data.uploadedFiles.forEach(function (fileObj) {
+          if (fileObj && fileObj.base64Data && fileObj.fileName) {
+            const bytes = Utilities.base64Decode(fileObj.base64Data);
+            const blob = Utilities.newBlob(bytes, fileObj.mimeType || "application/octet-stream", fileObj.fileName);
+            const driveFile = folder.createFile(blob);
+            driveFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+            const colIdx = headers.indexOf(fileObj.columnHeader);
+            if (colIdx !== -1) {
+              rowValues[colIdx] = driveFile.getUrl();
+            }
+          }
+        });
+      }
+
+      if (sheet.getLastRow() === 0) {
+        sheet.appendRow(headers);
+      }
+      // Keep column order consistent and handle empty optional fields
+      while (rowValues.length < headers.length) {
+        rowValues.push("");
+      }
+      sheet.appendRow(rowValues);
+
     } else {
       let sheet = ss.getSheetByName("Submissions") || ss.getActiveSheet();
       sheet.appendRow([timestamp, JSON.stringify(data)]);
@@ -227,8 +272,14 @@ function doPost(e) {
 }
 `;
 
-export const GITHUB_REPO_FILES = {
-  'index.html': `<!DOCTYPE html>
+export const DEFAULT_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbzQFGxzs1ftTpgZKd-MOBciCRvBaYqyM92VLO2qjtrt/dev';
+
+export const getGithubRepoFiles = (customUrl?: string) => {
+  const activeUrl = customUrl !== undefined ? customUrl : DEFAULT_SCRIPT_URL;
+
+  return {
+    'index.html': `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -256,8 +307,8 @@ export const GITHUB_REPO_FILES = {
   <main class="container main-content">
     <div class="config-banner">
       <div class="config-text">
-        <strong>Endpoint URL:</strong>
-        <span id="displayScriptUrl" class="url-text">Using demo simulator (Click to configure your live Webhook or Sheet URL)</span>
+        <strong>Active Endpoint URL:</strong>
+        <span id="displayScriptUrl" class="url-text">\${activeUrl || "Using demo simulator"}</span>
       </div>
       <button id="openConfigBtn" class="btn-secondary">Configure Webhook URL</button>
     </div>
@@ -464,7 +515,7 @@ export const GITHUB_REPO_FILES = {
 </body>
 </html>
 `,
-  'style.css': `/* f-docx Stylesheet */
+    'style.css': `/* f-docx Stylesheet */
 :root {
   --primary: #0f9d58;
   --primary-hover: #0b8043;
@@ -587,6 +638,7 @@ body {
   font-size: 0.8rem;
   color: #3b82f6;
   margin-top: 0.2rem;
+  word-break: break-all;
 }
 
 .form-section {
@@ -769,8 +821,9 @@ th {
   background-color: white;
 }
 `,
-  'script.js': `// f-docx - Form to Google Sheets & Webhook Client
-let ENDPOINT_URL = "";
+    'script.js': `// f-docx - Form to Google Sheets & Webhook Client
+// Dynamically connected endpoint URL:
+let ENDPOINT_URL = "${activeUrl}";
 
 document.addEventListener("DOMContentLoaded", () => {
   const tabs = document.querySelectorAll(".nav-tab");
@@ -888,47 +941,33 @@ function addSubmissionRow(type, data) {
   tbody.insertBefore(tr, tbody.firstChild);
 }
 `,
-  'README.md': `# f-docx: Connect HTML Website Forms Directly to Google Sheets
+    'README.md': `# f-docx: Connect HTML Website Forms Directly to Google Sheets
 
-A complete, production-ready website form suite that connects directly to **Google Sheets** without requiring any database or backend server. Ideal for static sites, Netlify, Vercel, or GitHub Pages.
+A complete, production-ready website form suite that connects directly to **Google Sheets** without requiring any database or backend server.
 
-## Included Forms in the Menu:
+## Configured Endpoint:
+\`${activeUrl}\`
+
+## Included Forms:
 1. **Registration Form** (Events, Conferences, Workshops, Attendees)
 2. **User Details / Login Form** (Team members, Staff onboarding, Account profiles)
 3. **Feedback Form** (Customer reviews, NPS score, Bug reports, Suggestions)
 
 ---
 
-## 🚀 Quick Setup with Google Sheets
-
-1. Open your Google Spreadsheet or webhook connector.
-2. Provide your endpoint URL in \`script.js\`.
-3. Submissions will automatically append to your spreadsheet tabs in real time.
-
----
-
 ## 📦 Push this project to GitHub as "f-docx"
 
-Run these commands in your terminal:
-
 \`\`\`bash
-# 1. Initialize git
 git init
-
-# 2. Add files
 git add .
-
-# 3. Create initial commit
 git commit -m "feat: complete f-docx form integration suite"
-
-# 4. Set main branch
 git branch -M main
-
-# 5. Add remote (replace with your GitHub username)
 git remote add origin https://github.com/your-username/f-docx.git
-
-# 6. Push to GitHub!
 git push -u origin main
 \`\`\`
 `,
+  };
 };
+
+export const GITHUB_REPO_FILES = getGithubRepoFiles();
+
