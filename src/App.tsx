@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   FormType,
   RegistrationSubmission,
@@ -7,6 +7,7 @@ import {
   WebAppConfig,
   CustomFormConfig,
   CustomFormSubmission,
+  ManagedFormRecord,
 } from './types';
 import { initialRegistrations, initialUserDetails, initialFeedbacks } from './data/defaultData';
 import {
@@ -23,26 +24,62 @@ import { IntegrationsHub } from './components/IntegrationsHub';
 import { GithubProjectHub } from './components/GithubProjectHub';
 import { LiveConfigModal } from './components/LiveConfigModal';
 import { FormBuilderWorkspace } from './components/form-builder/FormBuilderWorkspace';
+import { LoginGate } from './components/auth/LoginGate';
+import { PublicFormPage } from './components/public/PublicFormPage';
+import { UserFormsDashboard } from './components/dashboard/UserFormsDashboard';
+import { AdminControlCenter } from './components/admin/AdminControlCenter';
+import { useAuth } from './context/AuthContext';
+import { apiRequest } from './lib/api';
 import {
   FileSpreadsheet,
   ArrowRight,
-  Database,
-  Globe,
-  Github,
   Zap,
   CheckCircle,
-  ExternalLink,
   Split,
-  Eye,
   Sparkles,
-  Layers
+  Layers,
+  Loader2,
+  ArrowLeft,
 } from 'lucide-react';
-import { playSuccessChime } from './utils/audio';
 
 export const DEFAULT_SCRIPT_URL =
   'https://script.google.com/macros/s/AKfycbzQFGxzs1ftTpgZKd-MOBciCRvBaYqyM92VLO2qjtrt/dev';
 
+function extractPublicFormToken(pathname: string): string | null {
+  const match = pathname.match(/^\/forms\/([a-zA-Z0-9_-]+)\/?$/);
+  return match ? match[1] : null;
+}
+
 export default function App() {
+  const { user, loading: authLoading, logout, platformSettings } = useAuth();
+
+  // Client-side route detection for standalone Public Forms (/forms/:publicToken)
+  const [publicRouteToken, setPublicRouteToken] = useState<string | null>(() =>
+    extractPublicFormToken(window.location.pathname)
+  );
+  const [openedFromDashboard, setOpenedFromDashboard] = useState(false);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setPublicRouteToken(extractPublicFormToken(window.location.pathname));
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  const navigateToPublicForm = (token: string) => {
+    window.history.pushState({}, '', `/forms/${token}`);
+    setOpenedFromDashboard(true);
+    setPublicRouteToken(token);
+  };
+
+  const navigateBackFromPublicPreview = () => {
+    window.history.pushState({}, '', '/');
+    setOpenedFromDashboard(false);
+    setPublicRouteToken(null);
+  };
+
+  // Existing playground & simulator state (preserved)
   const [registrations, setRegistrations] = useState<RegistrationSubmission[]>(() => {
     try {
       const saved = localStorage.getItem('fdx_registrations');
@@ -75,8 +112,12 @@ export default function App() {
       const saved = localStorage.getItem('fdx_config');
       if (saved) {
         const parsed = JSON.parse(saved);
-        // If it was the previous placeholder URL, migrate to the user's latest provided URL
-        if (parsed.scriptUrl && !parsed.scriptUrl.includes('AKfycby4b4Vn8X5UVXXhriyus0rOHNUgJRPdW2ZtbTgd13vnfihFP348YHy5LjZTswwomGRaSg')) {
+        if (
+          parsed.scriptUrl &&
+          !parsed.scriptUrl.includes(
+            'AKfycby4b4Vn8X5UVXXhriyus0rOHNUgJRPdW2ZtbTgd13vnfihFP348YHy5LjZTswwomGRaSg'
+          )
+        ) {
           return {
             ...parsed,
             syncToRealSheet: parsed.syncToRealSheet !== undefined ? parsed.syncToRealSheet : true,
@@ -114,11 +155,47 @@ export default function App() {
     () => customForms[0]?.id || 'form_onboarding_starter'
   );
 
-  const [activeNavTab, setActiveNavTab] = useState<MainNavTab>('forms');
+  const [activeNavTab, setActiveNavTab] = useState<MainNavTab>('dashboard');
   const [activeFormTab, setActiveFormTab] = useState<FormType>('feedback');
   const [activeSheetTab, setActiveSheetTab] = useState<string>('feedback');
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [splitViewMode, setSplitViewMode] = useState(true);
+  const previousUserIdRef = useRef<string | null>(null);
+
+  // Redirect authenticated users to their role-appropriate dashboard on sign-in
+  useEffect(() => {
+    if (!user) {
+      previousUserIdRef.current = null;
+      setActiveNavTab('dashboard');
+      return;
+    }
+    if (previousUserIdRef.current !== user.id) {
+      previousUserIdRef.current = user.id;
+      setActiveNavTab(user.role === 'ADMIN' ? 'admin' : 'dashboard');
+    }
+  }, [user]);
+
+  // Sync user's backend forms into customForms when logged in
+  useEffect(() => {
+    if (!user) return;
+    apiRequest<{ forms: ManagedFormRecord[] }>('/api/forms')
+      .then((res) => {
+        if (res.forms && res.forms.length > 0) {
+          setCustomForms(res.forms);
+          setActiveCustomFormId((prev) =>
+            res.forms.some((f) => f.id === prev) ? prev : res.forms[0].id
+          );
+        }
+      })
+      .catch(() => {});
+  }, [user?.id]);
+
+  // Prevent non-admin users from staying on admin tab
+  useEffect(() => {
+    if (activeNavTab === 'admin' && user && user.role !== 'ADMIN') {
+      setActiveNavTab('dashboard');
+    }
+  }, [activeNavTab, user]);
 
   // Sync to local storage
   useEffect(() => {
@@ -156,6 +233,39 @@ export default function App() {
       localStorage.setItem('fdx_custom_submissions', JSON.stringify(customSubmissions));
     } catch {}
   }, [customSubmissions]);
+
+  const handlePersistFormToBackend = async (
+    form: CustomFormConfig,
+    publish = false
+  ): Promise<ManagedFormRecord | null> => {
+    if (!user) return null;
+    const saved = await apiRequest<{ form: ManagedFormRecord }>('/api/forms', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: form.id,
+        settings: form.settings,
+        fields: form.fields,
+        status: publish ? 'PUBLISHED' : undefined,
+      }),
+    });
+    if (publish && saved.form.status !== 'PUBLISHED') {
+      const pubRes = await apiRequest<{ form: ManagedFormRecord }>(
+        `/api/forms/${saved.form.id}/publish`,
+        { method: 'POST' }
+      );
+      return pubRes.form;
+    }
+    return saved.form;
+  };
+
+  const handleEditManagedFormInBuilder = (form: ManagedFormRecord) => {
+    setCustomForms((prev) => {
+      const exists = prev.some((f) => f.id === form.id);
+      return exists ? prev.map((f) => (f.id === form.id ? form : f)) : [form, ...prev];
+    });
+    setActiveCustomFormId(form.id);
+    setActiveNavTab('builder');
+  };
 
   const handleAddRegistration = (sub: RegistrationSubmission) => {
     setRegistrations((prev) => [...prev, sub]);
@@ -357,7 +467,7 @@ export default function App() {
         return;
       }
     } catch {
-      // Fallback to client fetch
+      // Fallback
     }
 
     try {
@@ -390,12 +500,53 @@ export default function App() {
     }
   };
 
+  // 1. Public Form Route (/forms/:publicToken) — renders completely isolated from dashboard/admin
+  if (publicRouteToken) {
+    return (
+      <div>
+        {openedFromDashboard && (
+          <div className="bg-slate-900 text-white px-4 py-2 text-xs flex items-center justify-between">
+            <span>Viewing published public form URL (/forms/{publicRouteToken})</span>
+            <button
+              type="button"
+              onClick={navigateBackFromPublicPreview}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/15 hover:bg-white/25 font-semibold cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" /> Return to Dashboard
+            </button>
+          </div>
+        )}
+        <PublicFormPage publicToken={publicRouteToken} />
+      </div>
+    );
+  }
+
+  // 2. Loading auth state
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#050807] flex items-center justify-center p-6">
+        <div className="flex items-center gap-3 text-sm font-semibold text-[#A7B0AD]">
+          <Loader2 className="w-5 h-5 animate-spin text-[#00E676]" />
+          <span>Verifying session...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Unauthenticated Dashboard Gate
+  if (!user) {
+    return <LoginGate />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-900 font-sans">
       {/* Top Navbar */}
       <Navbar
+        user={user}
+        onLogout={logout}
         activeNavTab={activeNavTab}
         onSelectNavTab={(tab) => {
+          if (tab === 'admin' && user.role !== 'ADMIN') return;
           setActiveNavTab(tab);
           if (tab === 'sheet') {
             setActiveSheetTab(activeFormTab);
@@ -411,9 +562,31 @@ export default function App() {
         totalSubmissions={totalSubmissions}
       />
 
+      {platformSettings?.maintenanceMode && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-xs font-semibold text-amber-900">
+          Platform maintenance notice is active. Admin controls remain accessible.
+        </div>
+      )}
+
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-        {/* Banner: Visual Flow Architecture (Shown in Forms tab) */}
+        {/* View 0: User / Creator Forms Dashboard */}
+        {activeNavTab === 'dashboard' && (
+          <UserFormsDashboard
+            onEditFormInBuilder={handleEditManagedFormInBuilder}
+            onOpenPublicPreview={navigateToPublicForm}
+          />
+        )}
+
+        {/* View 0B: ADMIN Control Center (Strictly ADMIN Only) */}
+        {activeNavTab === 'admin' && user.role === 'ADMIN' && (
+          <AdminControlCenter
+            onEditAnyForm={handleEditManagedFormInBuilder}
+            onOpenPublicPreview={navigateToPublicForm}
+          />
+        )}
+
+        {/* Banner: Visual Flow Architecture (Shown in Forms Playground tab) */}
         {activeNavTab === 'forms' && (
           <div className="space-y-4 mb-6">
             <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-teal-950 text-white rounded-2xl p-5 sm:p-6 shadow-sm border border-emerald-900/40">
@@ -431,7 +604,6 @@ export default function App() {
                   </p>
                 </div>
 
-                {/* Data Flow Diagram + Builder CTA */}
                 <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 self-start lg:self-auto shrink-0">
                   <div className="flex items-center gap-2 sm:gap-3 text-xs bg-slate-800/80 p-3 rounded-xl border border-slate-700/60 font-medium">
                     <div className="flex items-center gap-1.5 text-emerald-300">
@@ -481,9 +653,10 @@ export default function App() {
                     {webAppConfig.scriptUrl?.endsWith('/dev') && (
                       <button
                         type="button"
-                        onClick={() => handleUpdateEndpoint(webAppConfig.scriptUrl.replace(/\/dev$/, '/exec'))}
+                        onClick={() =>
+                          handleUpdateEndpoint(webAppConfig.scriptUrl.replace(/\/dev$/, '/exec'))
+                        }
                         className="shrink-0 px-2.5 py-1.5 text-xs font-semibold bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg border border-amber-300 transition-colors cursor-pointer"
-                        title="Switch to public /exec URL"
                       >
                         Switch to /exec
                       </button>
@@ -491,19 +664,15 @@ export default function App() {
                     {webAppConfig.scriptUrl?.endsWith('/exec') && (
                       <button
                         type="button"
-                        onClick={() => handleUpdateEndpoint(webAppConfig.scriptUrl.replace(/\/exec$/, '/dev'))}
+                        onClick={() =>
+                          handleUpdateEndpoint(webAppConfig.scriptUrl.replace(/\/exec$/, '/dev'))
+                        }
                         className="shrink-0 px-2.5 py-1.5 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-300 transition-colors cursor-pointer"
-                        title="Switch to developer /dev URL"
                       >
                         Switch to /dev
                       </button>
                     )}
                   </div>
-                  {webAppConfig.scriptUrl?.endsWith('/dev') && (
-                    <p className="text-[11px] text-amber-700 mt-1 flex items-center gap-1">
-                      <span>💡 <strong>Tip:</strong> <code className="bg-amber-100 px-1 rounded text-[10px]">/dev</code> URLs require Google login. Click <strong>Switch to /exec</strong> when deploying as a public Web app.</span>
-                    </p>
-                  )}
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
@@ -519,7 +688,6 @@ export default function App() {
                   <button
                     onClick={() => handleUpdateEndpoint(DEFAULT_SCRIPT_URL)}
                     className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
-                    title="Restore default Google Apps Script endpoint"
                   >
                     Reset
                   </button>
@@ -550,7 +718,6 @@ export default function App() {
         {activeNavTab === 'forms' && (
           <div className="space-y-8">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* Left Column: Active Form */}
               <div className={splitViewMode ? 'lg:col-span-6' : 'lg:col-span-12'}>
                 {activeFormTab === 'registration' && (
                   <RegistrationForm
@@ -572,7 +739,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Right Column: Google Sheet Simulator */}
               <div className={splitViewMode ? 'lg:col-span-6' : 'lg:col-span-12'}>
                 <div className="mb-2 flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -586,7 +752,6 @@ export default function App() {
                   <button
                     onClick={() => setSplitViewMode(!splitViewMode)}
                     className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
-                    title="Toggle split view"
                   >
                     <Split className="w-3.5 h-3.5" />
                     <span>{splitViewMode ? 'Expand Form' : 'Show Split View'}</span>
@@ -623,6 +788,8 @@ export default function App() {
             onSelectFormId={setActiveCustomFormId}
             onSaveForms={setCustomForms}
             onSubmitCustomForm={handleAddCustomSubmission}
+            onPersistFormToBackend={handlePersistFormToBackend}
+            onOpenPublicPreview={navigateToPublicForm}
             onOpenSheetView={(sheetNameOrId) => {
               const found = customForms.find(
                 (f) => f.id === sheetNameOrId || f.settings.sheetName === sheetNameOrId
@@ -707,46 +874,33 @@ export default function App() {
           <div className="flex items-center gap-2">
             <span className="font-bold text-slate-800 font-mono">f-docx</span>
             <span>•</span>
-            <span>Connect HTML Forms directly to Google Sheets</span>
+            <span>Role-Based Form Management & Google Sheets Suite</span>
           </div>
 
-          <div className="flex items-center gap-4 text-xs font-medium text-slate-600">
-            <button
-              onClick={() => setActiveNavTab('forms')}
-              className="hover:text-emerald-700 cursor-pointer"
-            >
-              Forms
+          <div className="flex flex-wrap items-center gap-4 text-xs font-medium text-slate-600">
+            <button onClick={() => setActiveNavTab('dashboard')} className="hover:text-emerald-700 cursor-pointer">
+              My Forms
             </button>
-            <button
-              onClick={() => setActiveNavTab('builder')}
-              className="hover:text-emerald-700 cursor-pointer"
-            >
+            <button onClick={() => setActiveNavTab('builder')} className="hover:text-emerald-700 cursor-pointer">
               Form Builder
             </button>
-            <button
-              onClick={() => setActiveNavTab('sheet')}
-              className="hover:text-emerald-700 cursor-pointer"
-            >
+            <button onClick={() => setActiveNavTab('forms')} className="hover:text-emerald-700 cursor-pointer">
+              Playground
+            </button>
+            <button onClick={() => setActiveNavTab('sheet')} className="hover:text-emerald-700 cursor-pointer">
               Google Sheet DB
             </button>
-            <button
-              onClick={() => setActiveNavTab('analytics')}
-              className="hover:text-emerald-700 cursor-pointer"
-            >
+            <button onClick={() => setActiveNavTab('analytics')} className="hover:text-emerald-700 cursor-pointer">
               Analytics
             </button>
-            <button
-              onClick={() => setActiveNavTab('integrations')}
-              className="hover:text-emerald-700 cursor-pointer"
-            >
+            <button onClick={() => setActiveNavTab('integrations')} className="hover:text-emerald-700 cursor-pointer">
               Integrations
             </button>
-            <button
-              onClick={() => setActiveNavTab('github')}
-              className="hover:text-emerald-700 cursor-pointer"
-            >
-              GitHub Project
-            </button>
+            {user.role === 'ADMIN' && (
+              <button onClick={() => setActiveNavTab('admin')} className="hover:text-indigo-700 font-bold cursor-pointer">
+                Admin Center
+              </button>
+            )}
           </div>
         </div>
       </footer>

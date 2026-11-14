@@ -1,0 +1,300 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'itzbarath07@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isFormOwner(formId) {
+      return isVerifiedUser() &&
+        exists(/databases/$(database)/documents/forms/$(formId)) &&
+        get(/databases/$(database)/documents/forms/$(formId)).data.ownerId == request.auth.uid;
+    }
+
+    // 3. Entity Validation Helpers (Anti-Update-Gap)
+    function isValidAdminMarker(data, userId) {
+      return data.keys().hasAll(['userId', 'email', 'grantedAt']) &&
+        data.keys().hasOnly(['userId', 'email', 'grantedAt']) &&
+        data.userId is string && data.userId == userId && isValidId(data.userId) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.grantedAt is timestamp;
+    }
+
+    function isValidUserPublic(data, userId) {
+      return data.keys().hasAll(['userId', 'fullName', 'accountStatus', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'fullName', 'profilePictureUrl', 'accountStatus', 'createdAt', 'updatedAt']) &&
+        data.userId is string && data.userId == userId && isValidId(data.userId) &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
+        (!('profilePictureUrl' in data) || (data.profilePictureUrl is string && data.profilePictureUrl.size() <= 1000)) &&
+        data.accountStatus in ['ACTIVE', 'DEACTIVATED'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data, userId) {
+      return data.keys().hasAll(['userId', 'googleId', 'email', 'role', 'lastLogin', 'updatedAt']) &&
+        data.keys().hasOnly(['userId', 'googleId', 'email', 'role', 'lastLogin', 'updatedAt']) &&
+        data.userId is string && data.userId == userId && isValidId(data.userId) &&
+        data.googleId is string && data.googleId.size() >= 1 && data.googleId.size() <= 128 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.role in ['ADMIN', 'USER'] &&
+        data.lastLogin is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidForm(data, formId) {
+      return data.keys().hasAll(['id', 'ownerId', 'title', 'status', 'publicToken', 'accessMode', 'submissionsEnabled', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'ownerId', 'title', 'status', 'publicToken', 'accessMode', 'submissionsEnabled', 'createdAt', 'updatedAt']) &&
+        data.id is string && data.id == formId && isValidId(data.id) &&
+        data.ownerId is string && isValidId(data.ownerId) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.status in ['DRAFT', 'PUBLISHED', 'SUSPENDED'] &&
+        data.publicToken is string && data.publicToken.size() >= 8 && data.publicToken.size() <= 64 &&
+        data.publicToken.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.accessMode in ['PUBLIC_ANONYMOUS', 'REQUIRE_LOGIN'] &&
+        data.submissionsEnabled is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFormField(data, fieldId) {
+      return data.keys().hasAll(['fieldKey', 'ownerId', 'fieldType', 'label', 'columnHeader', 'fieldOrder', 'updatedAt']) &&
+        data.keys().hasOnly(['fieldKey', 'ownerId', 'fieldType', 'label', 'columnHeader', 'fieldOrder', 'updatedAt']) &&
+        data.fieldKey is string && data.fieldKey == fieldId && isValidId(data.fieldKey) &&
+        data.ownerId is string && isValidId(data.ownerId) &&
+        data.fieldType is string && data.fieldType.size() >= 1 && data.fieldType.size() <= 64 &&
+        data.label is string && data.label.size() >= 1 && data.label.size() <= 200 &&
+        data.columnHeader is string && data.columnHeader.size() >= 1 && data.columnHeader.size() <= 120 &&
+        data.fieldOrder is number && data.fieldOrder >= 0 && data.fieldOrder <= 1000 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFormResponse(data, responseId, formId) {
+      return data.keys().hasAll(['id', 'formId', 'formOwnerId', 'submittedAt']) &&
+        data.keys().hasOnly(['id', 'formId', 'formOwnerId', 'respondentUserId', 'submittedAt']) &&
+        data.id is string && data.id == responseId && isValidId(data.id) &&
+        data.formId is string && data.formId == formId && isValidId(data.formId) &&
+        data.formOwnerId is string && isValidId(data.formOwnerId) &&
+        (!('respondentUserId' in data) || (data.respondentUserId is string && data.respondentUserId.size() <= 128)) &&
+        data.submittedAt is timestamp;
+    }
+
+    function isValidAuditLog(data, logId) {
+      return data.keys().hasAll(['id', 'action', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'actorUserId', 'action', 'createdAt']) &&
+        data.id is string && data.id == logId && isValidId(data.id) &&
+        (!('actorUserId' in data) || (data.actorUserId is string && data.actorUserId.size() <= 128)) &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 100 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidPlatformSetting(data, settingId) {
+      return data.keys().hasAll(['key', 'updatedAt']) &&
+        data.keys().hasOnly(['key', 'value', 'updatedAt']) &&
+        data.key is string && data.key == settingId && data.key.size() >= 1 && data.key.size() <= 100 &&
+        (!('value' in data) || (data.value is string && data.value.size() <= 2000)) &&
+        data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Match Blocks
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidId(userId) && isAdmin() && isValidAdminMarker(incoming(), userId);
+      allow delete: if isValidId(userId) && isAdmin() && userId != request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) &&
+        isVerifiedUser() &&
+        isValidUserPublic(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (isOwner(userId) && incoming().accountStatus == 'ACTIVE') ||
+          isAdmin()
+        );
+      allow update: if isValidId(userId) &&
+        isVerifiedUser() &&
+        isValidUserPublic(incoming(), userId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (isOwner(userId) &&
+            existing().accountStatus == 'ACTIVE' &&
+            incoming().accountStatus == existing().accountStatus &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'profilePictureUrl', 'updatedAt']))
+        );
+      allow delete: if isValidId(userId) && isAdmin() && userId != request.auth.uid;
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow list: if isAdmin();
+        allow create: if isValidId(userId) && isValidId(docId) &&
+          isVerifiedUser() &&
+          isValidUserPrivate(incoming(), userId) &&
+          incoming().lastLogin == request.time &&
+          incoming().updatedAt == request.time &&
+          (
+            (isOwner(userId) && incoming().role == 'USER') ||
+            isAdmin()
+          );
+        allow update: if isValidId(userId) && isValidId(docId) &&
+          isVerifiedUser() &&
+          isValidUserPrivate(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().googleId == existing().googleId &&
+          incoming().updatedAt == request.time &&
+          (
+            isAdmin() ||
+            (isOwner(userId) &&
+              incoming().role == existing().role &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['email', 'lastLogin', 'updatedAt']))
+          );
+        allow delete: if isValidId(userId) && isValidId(docId) && isAdmin() && userId != request.auth.uid;
+      }
+    }
+
+    match /forms/{formId} {
+      allow get: if isValidId(formId) && (
+        existing().status == 'PUBLISHED' ||
+        isOwner(existing().ownerId) ||
+        isAdmin()
+      );
+      allow list: if resource.data.status == 'PUBLISHED' ||
+        (isVerifiedUser() && resource.data.ownerId == request.auth.uid) ||
+        isAdmin();
+      allow create: if isValidId(formId) &&
+        isVerifiedUser() &&
+        isValidForm(incoming(), formId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().ownerId == request.auth.uid || isAdmin());
+      allow update: if isValidId(formId) &&
+        isVerifiedUser() &&
+        isValidForm(incoming(), formId) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (isOwner(existing().ownerId) &&
+            existing().status != 'SUSPENDED' &&
+            incoming().status in ['DRAFT', 'PUBLISHED'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'status', 'publicToken', 'accessMode', 'submissionsEnabled', 'updatedAt']))
+        );
+      allow delete: if isValidId(formId) && isVerifiedUser() && (isOwner(existing().ownerId) || isAdmin());
+
+      match /fields/{fieldId} {
+        allow get: if isValidId(formId) && isValidId(fieldId) && (
+          isFormOwner(formId) ||
+          isAdmin() ||
+          (exists(/databases/$(database)/documents/forms/$(formId)) &&
+            get(/databases/$(database)/documents/forms/$(formId)).data.status == 'PUBLISHED')
+        );
+        allow list: if (isVerifiedUser() && resource.data.ownerId == request.auth.uid) || isAdmin();
+        allow create: if isValidId(formId) && isValidId(fieldId) &&
+          isVerifiedUser() &&
+          isValidFormField(incoming(), fieldId) &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/forms/$(formId)) &&
+          incoming().ownerId == get(/databases/$(database)/documents/forms/$(formId)).data.ownerId &&
+          (isFormOwner(formId) || isAdmin());
+        allow update: if isValidId(formId) && isValidId(fieldId) &&
+          isVerifiedUser() &&
+          isValidFormField(incoming(), fieldId) &&
+          incoming().fieldKey == existing().fieldKey &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().updatedAt == request.time &&
+          (isFormOwner(formId) || isAdmin()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['fieldType', 'label', 'columnHeader', 'fieldOrder', 'updatedAt']);
+        allow delete: if isValidId(formId) && isValidId(fieldId) && isVerifiedUser() && (isFormOwner(formId) || isAdmin());
+      }
+
+      match /responses/{responseId} {
+        allow get: if isValidId(formId) && isValidId(responseId) && isVerifiedUser() && (isFormOwner(formId) || isAdmin());
+        allow list: if isVerifiedUser() && (resource.data.formOwnerId == request.auth.uid || isAdmin());
+        allow create: if isValidId(formId) && isValidId(responseId) &&
+          isValidFormResponse(incoming(), responseId, formId) &&
+          incoming().submittedAt == request.time &&
+          exists(/databases/$(database)/documents/forms/$(formId)) &&
+          get(/databases/$(database)/documents/forms/$(formId)).data.status == 'PUBLISHED' &&
+          get(/databases/$(database)/documents/forms/$(formId)).data.submissionsEnabled == true &&
+          incoming().formOwnerId == get(/databases/$(database)/documents/forms/$(formId)).data.ownerId &&
+          (
+            (get(/databases/$(database)/documents/forms/$(formId)).data.accessMode == 'PUBLIC_ANONYMOUS' && !('respondentUserId' in incoming())) ||
+            (isVerifiedUser() && incoming().respondentUserId == request.auth.uid)
+          );
+        allow update, delete: if false;
+      }
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(logId) &&
+        isVerifiedUser() &&
+        isValidAuditLog(incoming(), logId) &&
+        incoming().createdAt == request.time &&
+        (isAdmin() || incoming().actorUserId == request.auth.uid);
+      allow update, delete: if false;
+    }
+
+    match /platform_settings/{settingId} {
+      allow get: if isValidId(settingId) && isVerifiedUser();
+      allow list: if isAdmin();
+      allow create, update: if isValidId(settingId) &&
+        isAdmin() &&
+        isValidPlatformSetting(incoming(), settingId) &&
+        incoming().updatedAt == request.time;
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+
+    // Connection health check doc
+    match /test/connection {
+      allow read: if false;
+    }
+  }
+}

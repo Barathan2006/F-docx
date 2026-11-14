@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { WebAppConfig } from '../types';
 import { APPS_SCRIPT_CODE_UNIFIED } from '../data/defaultData';
+import { useAuth } from '../context/AuthContext';
 import {
   Globe,
   Zap,
@@ -18,7 +19,10 @@ import {
   ArrowRight,
   Sparkles,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  FileSpreadsheet,
+  Link2,
+  Unlink,
 } from 'lucide-react';
 
 interface Props {
@@ -28,6 +32,8 @@ interface Props {
 }
 
 export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig, onUpdateUrl }) => {
+  const { googleSheetsStatus, connectGoogleSheets, disconnectGoogleSheets } = useAuth();
+  const [oauthMessage, setOauthMessage] = useState<string | null>(null);
   const [url, setUrl] = useState(webAppConfig.scriptUrl || '');
   const [syncEnabled, setSyncEnabled] = useState(webAppConfig.syncToRealSheet ?? true);
 
@@ -172,6 +178,79 @@ export const IntegrationsHub: React.FC<Props> = ({ webAppConfig, onSaveConfig, o
 
   return (
     <div className="space-y-6">
+      {/* Separate Google Sheets OAuth Connector */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-6 sm:p-8 shadow-sm">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+              <FileSpreadsheet className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold text-slate-900">
+                  Google Sheets & Drive OAuth Account
+                </h2>
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                    googleSheetsStatus.connected
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : googleSheetsStatus.tokenStatus === 'NEEDS_REAUTH'
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {googleSheetsStatus.connected ? 'Connected' : googleSheetsStatus.tokenStatus}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-1 max-w-2xl">
+                {googleSheetsStatus.connected
+                  ? `Connected to ${googleSheetsStatus.googleEmail}. Your OAuth access token is encrypted at rest on the server and used when creating or appending rows to your Google Spreadsheets.`
+                  : 'Authorize Google Sheets & Drive access independently of your login session to automatically create destination spreadsheets and sync form submissions.'}
+              </p>
+              {oauthMessage && (
+                <p className="text-xs font-semibold text-emerald-700 mt-2">{oauthMessage}</p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {googleSheetsStatus.connected ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  await disconnectGoogleSheets();
+                  setOauthMessage('Google Sheets account disconnected.');
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 cursor-pointer"
+              >
+                <Unlink className="w-3.5 h-3.5" />
+                <span>Disconnect Google Sheets</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const res = await connectGoogleSheets();
+                    setOauthMessage(`Connected Google Sheets for ${res.googleEmail}.`);
+                  } catch (err: any) {
+                    setOauthMessage(err?.message || 'OAuth authorization failed.');
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white cursor-pointer"
+              >
+                <Link2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>
+                  {googleSheetsStatus.tokenStatus === 'NEEDS_REAUTH'
+                    ? 'Reconnect Google Sheets'
+                    : 'Connect Google Sheets Account'}
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Banner */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-6 sm:p-8 shadow-sm">
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 mb-2">

@@ -226,3 +226,107 @@ export interface CustomFormSubmission {
   }[];
   rawValues: Record<string, any>;
 }
+
+// ==========================================
+// Role-Based Form Management System Types
+// ==========================================
+
+export type UserRole = 'ADMIN' | 'USER';
+export type AccountStatus = 'ACTIVE' | 'DEACTIVATED';
+export type FormStatus = 'DRAFT' | 'PUBLISHED' | 'SUSPENDED';
+export type FormAccessMode = 'PUBLIC_ANONYMOUS' | 'REQUIRE_LOGIN';
+
+export interface UserProfile {
+  id: string;
+  googleId: string;
+  fullName: string;
+  email: string;
+  profilePictureUrl: string | null;
+  role: UserRole;
+  accountStatus: AccountStatus;
+  createdAt: string;
+  lastLogin: string;
+  formCount?: number;
+  submissionCount?: number;
+  sheetsConnected?: boolean;
+}
+
+export interface ManagedFormRecord extends CustomFormConfig {
+  ownerId: string;
+  ownerName: string;
+  ownerEmail: string;
+  title: string;
+  description: string;
+  sheetName: string;
+  status: FormStatus;
+  publicToken: string;
+  accessMode: FormAccessMode;
+  oneResponsePerUser: boolean;
+  expiresAt: string | null;
+  maxResponses: number | null;
+  submissionsEnabled: boolean;
+  isReported: boolean;
+  reportReason: string | null;
+  spreadsheetId: string | null;
+  spreadsheetName: string | null;
+  appsScriptUrl: string | null;
+  responseCount: number;
+  createdAt: string;
+}
+
+export interface FormResponseRecord {
+  id: string;
+  formId: string;
+  formTitle?: string;
+  formOwnerEmail?: string;
+  respondentUserId: string | null;
+  respondentName: string;
+  respondentEmail: string | null;
+  isAnonymous: boolean;
+  columns: {
+    header: string;
+    type: GoogleSheetDataType;
+    value: string | number | boolean;
+  }[];
+  rawValues?: Record<string, any>;
+  sheetsSyncStatus: 'LOCAL_ONLY' | 'SYNCED' | 'TOKEN_EXPIRED' | 'SYNC_FAILED';
+  sheetsSyncError?: string | null;
+  submittedAt: string;
+}
+
+export interface GoogleIntegrationStatus {
+  connected: boolean;
+  tokenStatus: 'CONNECTED' | 'NEEDS_REAUTH' | 'DISCONNECTED';
+  googleEmail: string | null;
+  scopes?: string[];
+  updatedAt?: string;
+}
+
+export interface SpreadsheetSummary {
+  id: string;
+  name: string;
+  webViewLink: string;
+  modifiedTime?: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  actor_user_id: string | null;
+  actor_email: string | null;
+  actor_role: string | null;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  details: string | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
+export interface PlatformSettingsConfig {
+  allowPublicRegistration: boolean;
+  allowAnonymousForms: boolean;
+  maxFormsPerUser: number;
+  disabledComponentTypes: FormComponentType[];
+  maintenanceMode: boolean;
+}
+

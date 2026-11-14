@@ -245,12 +245,28 @@ function doPost(e) {
 
       if (sheet.getLastRow() === 0) {
         sheet.appendRow(headers);
+        while (rowValues.length < headers.length) {
+          rowValues.push("");
+        }
+        sheet.appendRow(rowValues);
+      } else {
+        // Align with existing sheet headers and append any newly added custom fields
+        const lastCol = Math.max(sheet.getLastColumn(), 1);
+        const existingHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+        headers.forEach(function (h) {
+          if (existingHeaders.indexOf(h) === -1) {
+            existingHeaders.push(h);
+            sheet.getRange(1, existingHeaders.length).setValue(h);
+          }
+        });
+        const alignedRow = existingHeaders.map(function (colHeader) {
+          const idx = headers.indexOf(colHeader);
+          if (idx === -1) return "";
+          const val = rowValues[idx];
+          return val !== undefined && val !== null ? val : "";
+        });
+        sheet.appendRow(alignedRow);
       }
-      // Keep column order consistent and handle empty optional fields
-      while (rowValues.length < headers.length) {
-        rowValues.push("");
-      }
-      sheet.appendRow(rowValues);
 
     } else {
       let sheet = ss.getSheetByName("Submissions") || ss.getActiveSheet();
